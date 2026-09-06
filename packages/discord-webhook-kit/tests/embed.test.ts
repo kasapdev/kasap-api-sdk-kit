@@ -76,6 +76,26 @@ describe("EmbedBuilder", () => {
     }
   });
 
+  it("does not throw when title is exactly at the 256-character limit", () => {
+    const builder = new EmbedBuilder().setTitle("a".repeat(256));
+
+    expect(() => builder.build()).not.toThrow();
+    expect(builder.build().title).toHaveLength(256);
+  });
+
+  it("throws DiscordEmbedValidationError when a field name exceeds 256 characters", () => {
+    const builder = new EmbedBuilder().addField({ name: "n".repeat(257), value: "value" });
+
+    expect(() => builder.build()).toThrow(DiscordEmbedValidationError);
+    expect(() => builder.build()).toThrow(/fields\[0\]\.name exceeds 256 characters/);
+  });
+
+  it("passes an already-numeric color through unchanged", () => {
+    const embed = new EmbedBuilder().setColor(0x5865f2).build();
+
+    expect(embed.color).toBe(0x5865f2);
+  });
+
   it("converts a hex color string to Discord's integer color format", () => {
     expect(hexColorToInt("#5865F2")).toBe(5793266);
     expect(hexColorToInt("5865F2")).toBe(5793266);

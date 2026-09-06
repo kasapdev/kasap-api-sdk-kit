@@ -123,6 +123,20 @@ describe("RobloxOpenCloudClient.getEntry", () => {
     expect(calledUrl).toContain("scope=custom");
   });
 
+  it("percent-encodes an entryId containing special characters (spaces, slashes) in the request path", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(fakeResponse(200, entryBody()));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new RobloxOpenCloudClient({ apiKey: API_KEY });
+    await client.getEntry({ universeId: "1", dataStoreId: "store", entryId: "player 1/save" });
+
+    const [calledUrl] = fetchMock.mock.calls[0] as [string];
+    expect(calledUrl).toBe(
+      "https://apis.roblox.com/cloud/v2/universes/1/data-stores/store/entries/player%201%2Fsave",
+    );
+    expect(calledUrl).not.toContain("player 1/save");
+  });
+
   it("sends the x-api-key header with the configured key", async () => {
     const fetchMock = vi.fn().mockResolvedValue(fakeResponse(200, entryBody()));
     vi.stubGlobal("fetch", fetchMock);

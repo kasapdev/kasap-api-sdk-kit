@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DiscordWebhookClient } from "../src/client.js";
+import { EMBED_LIMITS } from "../src/embed.js";
 import {
+  DiscordEmbedValidationError,
   DiscordHttpError,
   DiscordNetworkError,
   DiscordRateLimitError,
   DiscordTimeoutError,
 } from "../src/errors.js";
+import type { FinalizedEmbed } from "../src/types.js";
 
 function fakeResponse(status: number, body: unknown, headers: Record<string, string> = {}): Response {
   return {
@@ -151,6 +154,21 @@ describe("DiscordWebhookClient", () => {
     const client = newClient();
     await expect(client.send({ content: "hi" })).rejects.toThrow(DiscordNetworkError);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws DiscordEmbedValidationError when the message contains more than 10 embeds, without making a network request", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = newClient();
+    const embeds = Array.from(
+      { length: EMBED_LIMITS.EMBEDS_PER_MESSAGE + 1 },
+      (): FinalizedEmbed => ({ __finalized: true }),
+    );
+
+    await expect(client.send({ embeds })).rejects.toThrow(DiscordEmbedValidationError);
+    await expect(client.send({ embeds })).rejects.toThrow(/exceeding the max of 10 embeds/);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("accepts a full webhook URL as an alternative to id + token", async () => {

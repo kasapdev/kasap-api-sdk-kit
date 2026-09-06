@@ -60,6 +60,25 @@ describe("TwitchAppTokenProvider", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("refetches on the next getToken() call after invalidate(), even though the cached token is still within its validity window", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(fakeResponse(200, { access_token: "tok1", expires_in: 3600, token_type: "bearer" }))
+      .mockResolvedValueOnce(fakeResponse(200, { access_token: "tok2", expires_in: 3600, token_type: "bearer" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const provider = new TwitchAppTokenProvider({ clientId: "id", clientSecret: "secret" });
+
+    const token1 = await provider.getToken();
+    expect(token1).toBe("tok1");
+
+    provider.invalidate();
+    const token2 = await provider.getToken();
+
+    expect(token2).toBe("tok2");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("shares a single in-flight fetch across concurrent getToken() calls (single-flight)", async () => {
     let resolveFetch!: (value: Response) => void;
     const fetchMock = vi.fn().mockReturnValue(

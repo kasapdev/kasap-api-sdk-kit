@@ -175,6 +175,22 @@ describe("TwitchClipClient error handling", () => {
     expect(headersOf(secondCall)["Authorization"]).toBe("Bearer token-new");
   });
 
+  it("throws TwitchHttpError (no further retry loop) when the retried request also comes back 401", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(fakeResponse(401, { error: "Unauthorized", status: 401, message: "Invalid OAuth token" }))
+      .mockResolvedValueOnce(fakeResponse(401, { error: "Unauthorized", status: 401, message: "Invalid OAuth token" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tokenProvider = fakeTokenProvider("token-old", "token-still-bad");
+    const client = new TwitchClipClient({ clientId: "client-1", tokenProvider });
+
+    await expect(client.searchClips({ broadcasterId: "123" })).rejects.toBeInstanceOf(TwitchHttpError);
+    // Exactly one refresh-and-retry, never a second retry loop.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(tokenProvider.invalidate).toHaveBeenCalledTimes(1);
+  });
+
   it("throws TwitchHttpError on other non-2xx statuses", async () => {
     const fetchMock = vi
       .fn()

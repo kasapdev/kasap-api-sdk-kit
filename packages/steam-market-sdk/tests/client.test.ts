@@ -182,6 +182,20 @@ describe("SteamMarketClient.getPriceHistory", () => {
     expect(headers["Cookie"]).toBe("steamLoginSecure=abc123sessiontoken");
   });
 
+  it("returns an empty points array when success is true but price_history is omitted", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(fakeResponse(200, { success: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SteamMarketClient();
+    const result = await client.getPriceHistory({
+      appId: 730,
+      marketHashName: "AK-47 | Redline (Field-Tested)",
+      cookie: "abc123sessiontoken",
+    });
+
+    expect(result.points).toEqual([]);
+  });
+
   it("throws with a cookie/login-related message when Steam responds with success: false", async () => {
     const fetchMock = vi.fn().mockResolvedValue(fakeResponse(200, { success: false }));
     vi.stubGlobal("fetch", fetchMock);
