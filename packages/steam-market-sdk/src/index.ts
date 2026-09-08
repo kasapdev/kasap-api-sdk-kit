@@ -1,3 +1,5 @@
+export { TtlCache } from "./cache.js";
+export type { TtlCacheOptions } from "./cache.js";
 export { SteamMarketClient } from "./client.js";
 export {
   SteamMarketApiError,

@@ -147,6 +147,57 @@ describe("SteamMarketClient.getPriceOverview", () => {
     expect(calledUrl).toContain("%7C");
     expect(calledUrl).not.toContain(" ");
   });
+
+  it("defaults the currency query parameter to 1 (USD) when omitted", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(fakeResponse(200, { success: true, lowest_price: "$1.00 USD" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SteamMarketClient();
+    await client.getPriceOverview({ appId: 730, marketHashName: "Item" });
+
+    const calledUrl = fetchMock.mock.calls[0]?.[0] as string;
+    expect(calledUrl).toContain("&currency=1");
+  });
+
+  it("throws SteamMarketHttpError carrying the real status/statusText/endpoint (not just an instanceof match)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(fakeResponse(503, {}));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SteamMarketClient({ baseUrl: "https://example.test/market" });
+
+    try {
+      await client.getPriceOverview({ appId: 730, marketHashName: "Item" });
+      expect.unreachable("expected getPriceOverview to throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(SteamMarketHttpError);
+      const httpError = error as SteamMarketHttpError;
+      expect(httpError.status).toBe(503);
+      expect(httpError.statusText).toBe("Error");
+      expect(httpError.endpoint).toContain("https://example.test/market/priceoverview/");
+      expect(httpError.context).toEqual({ status: 503, statusText: "Error" });
+    }
+  });
+
+  it("throws SteamMarketNotFoundError carrying the raw Steam payload in .context", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(fakeResponse(200, { success: false }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SteamMarketClient();
+
+    try {
+      await client.getPriceOverview({ appId: 730, marketHashName: "Item", currency: 3 });
+      expect.unreachable("expected getPriceOverview to throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(SteamMarketNotFoundError);
+      const notFoundError = error as SteamMarketNotFoundError;
+      expect(notFoundError.context).toMatchObject({
+        appId: 730,
+        marketHashName: "Item",
+        currency: 3,
+        raw: { success: false },
+      });
+    }
+  });
 });
 
 describe("SteamMarketClient.getPriceHistory", () => {
@@ -217,5 +268,144 @@ describe("SteamMarketClient.getPriceHistory", () => {
         cookie: "expired-or-invalid",
       }),
     ).rejects.toBeInstanceOf(SteamMarketNotFoundError);
+  });
+});
+
+describe("SteamMarketClient caching (cacheTtlMs)", () => {
+  it("does not cache by default (cacheTtlMs omitted): every call hits the network", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(fakeResponse(200, { success: true, lowest_price: "$1.00 USD" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SteamMarketClient();
+    await client.getPriceOverview({ appId: 730, marketHashName: "Item" });
+    await client.getPriceOverview({ appId: 730, marketHashName: "Item" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("reuses a cached getPriceOverview response within the TTL window (cache hit)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(fakeResponse(200, { success: true, lowest_price: "$1.00 USD" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SteamMarketClient({ cacheTtlMs: 60_000 });
+    const result1 = await client.getPriceOverview({ appId: 730, marketHashName: "Item" });
+    const result2 = await client.getPriceOverview({ appId: 730, marketHashName: "Item" });
+
+    expect(result1).toEqual(result2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats different params as different cache keys (currency changes the key)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(fakeResponse(200, { success: true, lowest_price: "$1.00 USD" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SteamMarketClient({ cacheTtlMs: 60_000 });
+    await client.getPriceOverview({ appId: 730, marketHashName: "Item", currency: 1 });
+    await client.getPriceOverview({ appId: 730, marketHashName: "Item", currency: 3 });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("refetches once a cached entry passes its TTL (cache expiry)", async () => {
+    let currentTime = 0;
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(fakeResponse(200, { success: true, lowest_price: "$1.00 USD" }))
+      .mockResolvedValueOnce(fakeResponse(200, { success: true, lowest_price: "$2.00 USD" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SteamMarketClient({ cacheTtlMs: 1000, now: () => currentTime });
+    const result1 = await client.getPriceOverview({ appId: 730, marketHashName: "Item" });
+    currentTime = 1000;
+    const result2 = await client.getPriceOverview({ appId: 730, marketHashName: "Item" });
+
+    expect(result1.lowestPrice).toBe("$1.00 USD");
+    expect(result2.lowestPrice).toBe("$2.00 USD");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("de-duplicates concurrent identical getPriceOverview calls into a single network request", async () => {
+    let resolveFetch!: (value: Response) => void;
+    const fetchMock = vi.fn().mockReturnValue(
+      new Promise<Response>((resolve) => {
+        resolveFetch = resolve;
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SteamMarketClient({ cacheTtlMs: 60_000 });
+    const p1 = client.getPriceOverview({ appId: 730, marketHashName: "Item" });
+    const p2 = client.getPriceOverview({ appId: 730, marketHashName: "Item" });
+
+    resolveFetch(fakeResponse(200, { success: true, lowest_price: "$1.00 USD" }));
+    const [result1, result2] = await Promise.all([p1, p2]);
+
+    expect(result1).toEqual(result2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not cache a SteamMarketNotFoundError: the next call retries the network", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(fakeResponse(200, { success: false }))
+      .mockResolvedValueOnce(fakeResponse(200, { success: true, lowest_price: "$1.00 USD" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SteamMarketClient({ cacheTtlMs: 60_000 });
+
+    await expect(
+      client.getPriceOverview({ appId: 730, marketHashName: "Item" }),
+    ).rejects.toBeInstanceOf(SteamMarketNotFoundError);
+    const result = await client.getPriceOverview({ appId: 730, marketHashName: "Item" });
+
+    expect(result.lowestPrice).toBe("$1.00 USD");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("with cacheTtlMs: 0, storage is disabled so every non-overlapping call still hits the network", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(fakeResponse(200, { success: true, lowest_price: "$1.00 USD" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SteamMarketClient({ cacheTtlMs: 0 });
+    await client.getPriceOverview({ appId: 730, marketHashName: "Item" });
+    await client.getPriceOverview({ appId: 730, marketHashName: "Item" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("clearCache() forces the next call to hit the network again", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(fakeResponse(200, { success: true, lowest_price: "$1.00 USD" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SteamMarketClient({ cacheTtlMs: 60_000 });
+    await client.getPriceOverview({ appId: 730, marketHashName: "Item" });
+    client.clearCache();
+    await client.getPriceOverview({ appId: 730, marketHashName: "Item" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("clearCache() is a harmless no-op when caching was never enabled", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(fakeResponse(200, { success: true, lowest_price: "$1.00 USD" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SteamMarketClient();
+    expect(() => client.clearCache()).not.toThrow();
+    await client.getPriceOverview({ appId: 730, marketHashName: "Item" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("caches getPriceHistory by appId/marketHashName/cookie, and treats a different cookie as a different key", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      fakeResponse(200, { success: true, price_history: [["Dec 01 2018 01: +0", 1.23, "5"]] }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new SteamMarketClient({ cacheTtlMs: 60_000 });
+    await client.getPriceHistory({ appId: 730, marketHashName: "Item", cookie: "session-a" });
+    await client.getPriceHistory({ appId: 730, marketHashName: "Item", cookie: "session-a" });
+    await client.getPriceHistory({ appId: 730, marketHashName: "Item", cookie: "session-b" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

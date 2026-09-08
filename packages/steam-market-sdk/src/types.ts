@@ -102,4 +102,24 @@ export interface SteamMarketClientOptions {
   baseUrl?: string;
   /** Per-request timeout, in milliseconds. Defaults to 10_000 (10s). */
   timeoutMs?: number;
+  /**
+   * Enables an opt-in, in-memory TTL cache shared by `getPriceOverview` and
+   * `getPriceHistory`. When set, a successful response is cached by its
+   * request parameters (for `getPriceHistory`, this includes the session
+   * `cookie`, so different sessions never share an entry) for this many
+   * milliseconds. Concurrent calls with identical parameters share a single
+   * in-flight request instead of each hitting Steam's rate-limited endpoints
+   * separately.
+   *
+   * Omitted (the default) disables caching entirely — every call always
+   * hits the network, matching this SDK's original behavior. `0` disables
+   * *storing* results (so every non-overlapping call still hits the
+   * network) but still de-duplicates concurrent identical in-flight calls.
+   *
+   * Use {@link SteamMarketClient.clearCache} to evict everything currently
+   * cached, e.g. after refreshing a `steamLoginSecure` cookie.
+   */
+  cacheTtlMs?: number;
+  /** Injectable clock used by the cache, primarily for tests. Defaults to `Date.now`. */
+  now?: () => number;
 }

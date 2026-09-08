@@ -1,3 +1,4 @@
+import { TtlCache } from "./cache.js";
 import {
   SteamMarketHttpError,
   SteamMarketNetworkError,
@@ -29,14 +30,23 @@ const DEFAULT_TIMEOUT_MS = 10_000;
  *   behavior should implement it themselves with their own backoff policy.
  * - `getPriceOverview` needs no authentication.
  * - `getPriceHistory` requires a logged-in session cookie — see its TSDoc.
+ * - Response caching is entirely opt-in via `cacheTtlMs` — see
+ *   {@link SteamMarketClientOptions.cacheTtlMs}. By default, every call
+ *   always hits the network.
  */
 export class SteamMarketClient {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
+  private readonly overviewCache?: TtlCache<SteamPriceOverview>;
+  private readonly historyCache?: TtlCache<SteamPriceHistory>;
 
   constructor(options: SteamMarketClientOptions = {}) {
     this.baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    if (options.cacheTtlMs !== undefined) {
+      this.overviewCache = new TtlCache<SteamPriceOverview>({ ttlMs: options.cacheTtlMs, now: options.now });
+      this.historyCache = new TtlCache<SteamPriceHistory>({ ttlMs: options.cacheTtlMs, now: options.now });
+    }
   }
 
   /**
@@ -51,6 +61,20 @@ export class SteamMarketClient {
    */
   async getPriceOverview(params: GetPriceOverviewParams): Promise<SteamPriceOverview> {
     const { appId, marketHashName, currency = 1 } = params;
+    const fetchOverview = (): Promise<SteamPriceOverview> => this.fetchPriceOverview(appId, marketHashName, currency);
+
+    if (!this.overviewCache) {
+      return fetchOverview();
+    }
+    const cacheKey = JSON.stringify({ appId, marketHashName, currency });
+    return this.overviewCache.wrap(cacheKey, fetchOverview);
+  }
+
+  private async fetchPriceOverview(
+    appId: number,
+    marketHashName: string,
+    currency: number,
+  ): Promise<SteamPriceOverview> {
     // Built manually with encodeURIComponent (rather than URLSearchParams,
     // which encodes spaces as "+") so market hash names containing spaces,
     // "|", "(", ")", etc. (e.g. "AK-47 | Redline (Field-Tested)") are
@@ -98,6 +122,18 @@ export class SteamMarketClient {
    */
   async getPriceHistory(params: GetPriceHistoryParams): Promise<SteamPriceHistory> {
     const { appId, marketHashName, cookie } = params;
+    const fetchHistory = (): Promise<SteamPriceHistory> => this.fetchPriceHistory(appId, marketHashName, cookie);
+
+    if (!this.historyCache) {
+      return fetchHistory();
+    }
+    // The cookie is part of the key (not just appId/marketHashName) so that
+    // two different logged-in sessions never share a cached entry.
+    const cacheKey = JSON.stringify({ appId, marketHashName, cookie });
+    return this.historyCache.wrap(cacheKey, fetchHistory);
+  }
+
+  private async fetchPriceHistory(appId: number, marketHashName: string, cookie: string): Promise<SteamPriceHistory> {
     const endpoint =
       `${this.baseUrl}/pricehistory/` +
       `?appid=${encodeURIComponent(String(appId))}` +
@@ -122,6 +158,16 @@ export class SteamMarketClient {
     });
 
     return { points };
+  }
+
+  /**
+   * Evicts every cached `getPriceOverview` / `getPriceHistory` entry. A no-op
+   * if `cacheTtlMs` wasn't set (caching disabled). Useful after refreshing a
+   * `steamLoginSecure` cookie, or to force fresh reads on demand.
+   */
+  clearCache(): void {
+    this.overviewCache?.clear();
+    this.historyCache?.clear();
   }
 
   /**

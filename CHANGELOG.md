@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-09-08
+
+### Added
+
+- `steam-market-sdk` (`0.1.0` → `0.2.0`): opt-in, in-memory TTL response cache for
+  `SteamMarketClient`. Pass `cacheTtlMs` to the constructor to cache `getPriceOverview` /
+  `getPriceHistory` responses by their request parameters (including the session `cookie` for
+  `getPriceHistory`, so sessions never share an entry); concurrent calls for identical parameters
+  are de-duplicated into a single in-flight network request. A new `clearCache()` method evicts
+  everything cached. Caching is entirely opt-in — omitting `cacheTtlMs` (the default) preserves
+  the SDK's original always-hit-the-network behavior, so this is non-breaking. Implemented as a
+  new, dependency-free `TtlCache` utility (`src/cache.ts`), also exported for advanced use.
+- `steam-market-sdk`: edge-case tests for the new cache (hit/miss, TTL expiry boundary,
+  `cacheTtlMs: 0`, concurrent single-flight de-duplication, cache key differing by params/cookie,
+  failed calls are never cached, `clearCache()`), plus new coverage for previously-untested
+  behavior of the existing client: the default `currency=1` query parameter, and that
+  `SteamMarketHttpError` / `SteamMarketNotFoundError` carry the expected `status` / `statusText` /
+  `endpoint` / `context` properties. No bugs found in the existing implementation.
+
 ## 2026-09-06
 
 ### Added

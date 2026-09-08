@@ -84,6 +84,47 @@ something you register for. To find it:
 Treat this value like a password: it grants access to your logged-in Steam session and expires /
 rotates periodically. Never commit it to source control or share it publicly.
 
+## Response caching (opt-in)
+
+`SteamMarketClient` can optionally cache successful `getPriceOverview` / `getPriceHistory`
+responses in memory, keyed by their request parameters (for `getPriceHistory`, this includes the
+`cookie`, so two different logged-in sessions never share a cached entry). This is **entirely
+opt-in** — pass `cacheTtlMs` to the constructor to enable it. Without it, every call always hits
+the network exactly as before, so existing code is unaffected.
+
+This is especially useful against Steam's aggressively rate-limited market endpoints: repeatedly
+looking up the same item (e.g. rendering a price in a UI that re-renders often, or polling a
+watchlist) no longer needs a fresh network round-trip every time.
+
+```ts
+import { SteamMarketClient } from "@kasap/steam-market-sdk";
+
+const client = new SteamMarketClient({
+  cacheTtlMs: 60_000, // cache each response for 60 seconds
+});
+
+const a = await client.getPriceOverview({ appId: 730, marketHashName: "AK-47 | Redline (Field-Tested)" });
+const b = await client.getPriceOverview({ appId: 730, marketHashName: "AK-47 | Redline (Field-Tested)" });
+// `b` is served from the in-memory cache — no second network request was made.
+
+// Force fresh reads on demand (e.g. after refreshing a steamLoginSecure cookie):
+client.clearCache();
+```
+
+Behavior notes:
+
+- **Concurrent calls are de-duplicated.** If two callers request the exact same `appId` /
+  `marketHashName` / `currency` (or, for `getPriceHistory`, `cookie`) combination while a request
+  for it is still in flight, both share the single underlying network request instead of each
+  triggering their own.
+- **Failures are never cached.** If a call throws (`SteamMarketNotFoundError`,
+  `SteamMarketHttpError`, etc.), nothing is stored, and the next call retries the network.
+- **`cacheTtlMs: 0`** disables storing results (so every non-overlapping call still hits the
+  network) but still de-duplicates concurrent in-flight calls for the same key — useful if you
+  only want the concurrency protection without any staleness.
+- **Omitting `cacheTtlMs`** (the default) disables caching entirely.
+- `clearCache()` evicts every cached entry; it's a harmless no-op if caching was never enabled.
+
 ## Error handling
 
 All errors extend `SteamMarketApiError` (which carries the `endpoint` that was called and extra
@@ -102,6 +143,8 @@ All errors extend `SteamMarketApiError` (which carries the `endpoint` that was c
 new SteamMarketClient({
   baseUrl: "https://steamcommunity.com/market", // default
   timeoutMs: 10_000, // default
+  cacheTtlMs: undefined, // default: caching disabled. See "Response caching" below.
+  now: undefined, // default: Date.now. Injectable clock, primarily for tests.
 });
 ```
 
